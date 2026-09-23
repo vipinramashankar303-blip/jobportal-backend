@@ -28,10 +28,15 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 Day token expiry
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 def hash_password(password: str):
-    return pwd_context.hash(password)
+    # Passlib/Bcrypt 72 byte limit fix
+    if isinstance(password, str):
+        password = password.encode('utf-8')
+    return pwd_context.hash(password[:72])
 
 def verify_password(password: str, hashed_password: str):
-    return pwd_context.verify(password, hashed_password)
+    if isinstance(password, str):
+        password = password.encode('utf-8')
+    return pwd_context.verify(password[:72], hashed_password)
 
 def create_access_token(data: dict):
     to_encode = data.copy()
