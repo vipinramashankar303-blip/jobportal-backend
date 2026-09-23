@@ -1,3 +1,4 @@
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer
@@ -389,6 +390,234 @@ def save_job(data: SavedJobCreate, current_user: dict = Depends(get_current_user
         if cursor: cursor.close()
         if connection: connection.close()
 
+# --- 4. NEW FEATURES FOR LOW-EDUCATED USERS (Added without deleting old code) ---
+# Ye sab naya add kiya hai - purana kuch delete nahi kiya
+
+from typing import Optional, List
+
+# Simple Hindi/English dictionary for frontend buttons
+HINDI_TRANSLATIONS = {
+    "Driver": "ड्राइवर", "Cook": "रसोइया", "Maid": "नौकरानी", "Security Guard": "सुरक्षा गार्ड",
+    "Labour": "मजदूर", "Electrician": "इलेक्ट्रीशियन", "Plumber": "प्लंबर", "Delivery Boy": "डिलीवरी बॉय",
+    "search_jobs": "नौकरी खोजें", "post_job": "नौकरी डालें", "call_now": "अभी कॉल करें",
+    "whatsapp": "व्हाट्सएप करें", "apply": "अप्लाई करें", "near_me": "मेरे पास की नौकरी"
+}
+
+# Trending category list for big buttons
+BIG_BUTTON_CATEGORIES = [
+    {"id": 1, "en": "Driver", "hi": "ड्राइवर", "icon": "🚗", "color": "#3b82f6"},
+    {"id": 2, "en": "Cook", "hi": "रसोइया", "icon": "🍳", "color": "#f59e0b"},
+    {"id": 3, "en": "Maid", "hi": "नौकरानी", "icon": "🧹", "color": "#10b981"},
+    {"id": 4, "en": "Security Guard", "hi": "सुरक्षा गार्ड", "icon": "🛡️", "color": "#6366f1"},
+    {"id": 5, "en": "Labour", "hi": "मजदूर", "icon": "👷", "color": "#ef4444"},
+    {"id": 6, "en": "Delivery Boy", "hi": "डिलीवरी बॉय", "icon": "🛵", "color": "#8b5cf6"},
+    {"id": 7, "en": "Electrician", "hi": "इलेक्ट्रीशियन", "icon": "💡", "color": "#f97316"},
+    {"id": 8, "en": "Plumber", "hi": "प्लंबर", "icon": "🔧", "color": "#06b6d4"},
+]
+
+@app.get("/big-buttons")
+def get_big_buttons(lang: str = "both"):
+    # Frontend ke liye bade buttons ka data
+    return {"buttons": BIG_BUTTON_CATEGORIES, "translations": HINDI_TRANSLATIONS}
+
+@app.get("/translate")
+def get_translations():
+    return HINDI_TRANSLATIONS
+
+@app.get("/jobs/category/{category_name}")
+def get_jobs_by_category_name(category_name: str):
+    # Example: /jobs/category/Driver -> easy filter
+    connection = None
+    cursor = None
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+        # case-insensitive search
+        cursor.execute("""
+            SELECT j.job_id, j.job_title, j.job_description, j.salary_min, j.salary_max, j.salary_period, j.location, j.city, e.business_name, jc.category_name, j.posted_at
+            FROM jobs j
+            JOIN employers e ON j.employer_id = e.employer_id
+            JOIN job_categories jc ON j.category_id = jc.category_id
+            WHERE j.status = 'approved' AND LOWER(jc.category_name) LIKE LOWER(%s)
+            ORDER BY j.posted_at DESC
+        """, (f"%{category_name}%",))
+        rows = cursor.fetchall()
+        return [{"job_id": r[0], "job_title": r[1], "job_description": r[2], "salary_min": float(r[3]) if r[3] else None, "salary_max": float(r[4]) if r[4] else None, "salary_period": r[5], "location": r[6], "city": r[7], "business_name": r[8], "category_name": r[9], "posted_at": r[10]} for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor: cursor.close()
+        if connection: connection.close()
+
+class SimpleJobCreate(BaseModel):
+    employer_id: int
+    category_name: str  # User can send "Driver" instead of category_id
+    job_title: str
+    salary: float
+    location: str
+    phone: str  # simple contact
+    city: str | None = None
+
+@app.post("/jobs/simple-create")
+def create_simple_job(data: SimpleJobCreate, current_user: dict = Depends(get_current_user)):
+    # Low-educated employer ke liye simple job post - sirf 5 field
+    if current_user["role"] != "employer":
+        raise HTTPException(status_code=403, detail="Only employers can post jobs")
+    connection = None
+    cursor = None
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+        # find category_id by name
+        cursor.execute("SELECT category_id FROM job_categories WHERE LOWER(category_name) LIKE LOWER(%s) LIMIT 1", (f"%{data.category_name}%",))
+        cat = cursor.fetchone()
+        if not cat:
+            # agar category nahi mili to first category le lo
+            cursor.execute("SELECT category_id FROM job_categories LIMIT 1")
+            cat = cursor.fetchone()
+        category_id = cat[0]
+        cursor.execute(
+            "INSERT INTO jobs (employer_id, category_id, job_title, job_description, salary_min, salary_period, job_type, location, city) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING job_id",
+            (data.employer_id, category_id, data.job_title, f"Contact: {data.phone} - Simple job for {data.category_name}", data.salary, "monthly", "full-time", data.location, data.city)
+        )
+        job_id = cursor.fetchone()[0]
+        connection.commit()
+        return {"message": "Job posted! SimpleJobs par dikhegi", "job_id": job_id, "status": "pending", "hindi_message": "नौकरी सफलतापूर्वक डाली गई!"}
+    except Exception as e:
+        if connection: connection.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor: cursor.close()
+        if connection: connection.close()
+
+@app.get("/jobs/nearby")
+def nearby_jobs(city: str = None, area: str = None, pincode: str = None):
+    # Aas-paas ki naukri
+    connection = None
+    cursor = None
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+        query = """
+            SELECT j.job_id, j.job_title, j.location, j.city, j.area, e.business_name, jc.category_name
+            FROM jobs j
+            JOIN employers e ON j.employer_id = e.employer_id
+            JOIN job_categories jc ON j.category_id = jc.category_id
+            WHERE j.status = 'approved'
+        """
+        params = []
+        if city:
+            query += " AND LOWER(j.city) LIKE LOWER(%s)"
+            params.append(f"%{city}%")
+        if area:
+            query += " AND LOWER(j.area) LIKE LOWER(%s)"
+            params.append(f"%{area}%")
+        if pincode:
+            query += " AND j.pincode = %s"
+            params.append(pincode)
+        query += " ORDER BY j.posted_at DESC LIMIT 20"
+        cursor.execute(query, tuple(params))
+        rows = cursor.fetchall()
+        return [{"job_id": r[0], "job_title": r[1], "location": r[2], "city": r[3], "area": r[4], "business_name": r[5], "category_name": r[6]} for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor: cursor.close()
+        if connection: connection.close()
+
+class VoiceSearchRequest(BaseModel):
+    voice_text: str  # e.g., "driver ki naukri chahiye mumbai me"
+    language: str = "Hindi"
+
+@app.post("/voice-search")
+def voice_search(data: VoiceSearchRequest):
+    # Simple keyword extraction from voice text
+    text_lower = data.voice_text.lower()
+    detected_category = None
+    for cat in BIG_BUTTON_CATEGORIES:
+        if cat["en"].lower() in text_lower or cat["hi"] in text_lower:
+            detected_category = cat["en"]
+            break
+    return {
+        "original_text": data.voice_text,
+        "detected_category": detected_category,
+        "search_keywords": text_lower.split(),
+        "suggested_endpoint": f"/jobs/category/{detected_category}" if detected_category else "/jobs",
+        "hindi_response": f"{detected_category or 'सभी'} नौकरियां दिखाई जा रही हैं"
+    }
+
+@app.get("/jobs/{job_id}/contact")
+def get_job_contact(job_id: int):
+    # 1-click call ke liye
+    connection = None
+    cursor = None
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT e.business_name, e.phone, u.phone, j.job_title
+            FROM jobs j
+            JOIN employers e ON j.employer_id = e.employer_id
+            JOIN users u ON e.user_id = u.user_id
+            WHERE j.job_id = %s
+        """, (job_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Job not found")
+        business_name, emp_phone, user_phone, job_title = row
+        contact_phone = emp_phone or user_phone
+        return {
+            "job_id": job_id,
+            "job_title": job_title,
+            "business_name": business_name,
+            "call_number": contact_phone,
+            "whatsapp_link": f"https://wa.me/91{contact_phone}?text=Namaste,%20mujhe%20{job_title}%20ke%20liye%20apply%20karna%20hai",
+            "call_link": f"tel:{contact_phone}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor: cursor.close()
+        if connection: connection.close()
+
+@app.get("/jobs/easy-search")
+def easy_search(q: str = "", city: str = "", salary_min: float = 0):
+    # Sabse easy search - sirf ek word likho
+    connection = None
+    cursor = None
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT j.job_id, j.job_title, j.job_description, j.location, j.city, j.salary_min, e.business_name
+            FROM jobs j
+            JOIN employers e ON j.employer_id = e.employer_id
+            WHERE j.status = 'approved'
+            AND (LOWER(j.job_title) LIKE LOWER(%s) OR LOWER(j.job_description) LIKE LOWER(%s))
+            AND (LOWER(j.city) LIKE LOWER(%s) OR %s = '')
+            AND (j.salary_min >= %s OR %s = 0)
+            ORDER BY j.posted_at DESC LIMIT 30
+        """, (f"%{q}%", f"%{q}%", f"%{city}%", city, salary_min, salary_min))
+        rows = cursor.fetchall()
+        return [{"job_id": r[0], "job_title": r[1], "job_description": r[2][:100]+"...", "location": r[3], "city": r[4], "salary": r[5], "business_name": r[6]} for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor: cursor.close()
+        if connection: connection.close()
+
+@app.get("/faqs/easy")
+def easy_faqs(lang: str = "Hindi"):
+    faqs = [
+        {"q": "Job kaise dhoondu?", "a": "Bade button pe click karo - Driver, Cook, etc.", "en_q": "How to find job?", "en_a": "Click on big buttons"},
+        {"q": "Apply kaise karu?", "a": "Job pe click karo, fir Call ya WhatsApp button dabao", "en_q": "How to apply?", "en_a": "Click job, then Call or WhatsApp"},
+        {"q": "Naukri kaise daalu?", "a": "+ Naukri Daalo button dabao, sirf 5 cheez bharo", "en_q": "How to post job?", "en_a": "Click + Post Job, fill only 5 fields"},
+    ]
+    return {"faqs": faqs, "lang": lang}
+
 @app.get("/health")
 def health():
-    return {"status": "OK", "backend": "running & secured with JWT", "database": "PostgreSQL", "college_demo": "ready"}
+    return {"status": "OK", "backend": "running & secured with JWT", "database": "PostgreSQL", "college_demo": "ready", "new_features": ["big-buttons", "translate", "category-filter", "simple-create", "nearby", "voice-search", "contact", "easy-search", "faqs"], "message": "Low-educated friendly features added"}
+
