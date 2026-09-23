@@ -20,7 +20,7 @@ app.add_middleware(
 )
 
 # --- 2. SECURITY & AUTHENTICATION SETUP ---
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "rozgar_setu_college_project_super_secret_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 Day token expiry
@@ -28,15 +28,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 Day token expiry
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 def hash_password(password: str):
-    # Passlib/Bcrypt 72 byte limit fix
-    if isinstance(password, str):
-        password = password.encode('utf-8')
-    return pwd_context.hash(password[:72])
+    return pwd_context.hash(password)
 
 def verify_password(password: str, hashed_password: str):
-    if isinstance(password, str):
-        password = password.encode('utf-8')
-    return pwd_context.verify(password[:72], hashed_password)
+    return pwd_context.verify(password, hashed_password)
 
 def create_access_token(data: dict):
     to_encode = data.copy()
