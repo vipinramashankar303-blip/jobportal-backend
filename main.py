@@ -20,7 +20,7 @@ app.add_middleware(
 )
 
 # --- 2. SECURITY & AUTHENTICATION SETUP ---
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "rozgar_setu_college_project_super_secret_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 Day token expiry
