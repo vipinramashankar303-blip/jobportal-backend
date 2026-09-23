@@ -5,6 +5,7 @@ psycopg2-binary
 python-dotenv
 passlib
 python-jose[cryptography]
+PyJWT
 python-multipart
 pydantic
 email-validator
