@@ -6,7 +6,6 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, F
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime
 
-# Get DB URL
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./jobs.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -48,12 +47,10 @@ try:
         worker_city = Column(String)
         created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Try create tables, but don't crash if fails
     Base.metadata.create_all(bind=engine)
     print("Tables created successfully")
 except Exception as e:
     print(f"DB Error but continuing: {e}")
-    # Fallback to sqlite if postgres fails
     engine = create_engine("sqlite:///./jobs.db")
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base = declarative_base()
@@ -112,6 +109,8 @@ class RegisterRequest(BaseModel):
     phone: str
     password: str
     role: str = "Worker"
+    full_name: str = None
+    fullName: str = None
 
 class LoginRequest(BaseModel):
     phone: str
@@ -138,26 +137,56 @@ def root():
 
 @app.post("/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    # Accept full_name, fullName, or name - all work
+    actual_name = data.full_name or data.fullName or data.name
+    if not actual_name:
+        raise HTTPException(status_code=400, detail="Name required")
+    
     existing = db.query(User).filter(User.phone == data.phone).first()
     if existing:
         raise HTTPException(status_code=400, detail="Phone already registered")
-    user = User(name=data.name, phone=data.phone, password=data.password, role=data.role)
+    
+    user = User(name=actual_name, phone=data.phone, password=data.password, role=data.role)
     db.add(user)
     db.commit()
     db.refresh(user)
-    return {"message": "Account created!", "user_id": user.id}
+    
+    # FIX: Return ALL variants so frontend never crashes on full_name
+    return {
+        "message": "Account created!", 
+        "user_id": user.id,
+        "id": user.id,
+        "name": user.name,
+        "full_name": user.name,
+        "fullName": user.name,
+        "full name": user.name,
+        "role": user.role,
+        "phone": user.phone
+    }
 
 @app.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == data.phone, User.password == data.password).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid phone or password")
-    return {"message": "Login success", "user_id": user.id, "name": user.name}
+    
+    # FIX: Return ALL variants
+    return {
+        "message": "Login success", 
+        "user_id": user.id,
+        "id": user.id,
+        "name": user.name,
+        "full_name": user.name,
+        "fullName": user.name,
+        "full name": user.name,
+        "role": user.role,
+        "phone": user.phone
+    }
 
 @app.get("/jobs")
 def get_jobs(db: Session = Depends(get_db)):
     jobs = db.query(Job).order_by(Job.job_id.desc()).all()
-    return [{"job_id": j.job_id, "job_title": j.job_title, "company": j.company, "location": j.location, "city": j.city, "salary": j.salary, "contact": j.contact, "job_description": j.job_description, "created_at": str(j.created_at)} for j in jobs]
+    return [{"job_id": j.job_id, "job_title": j.job_title, "title": j.job_title, "company": j.company, "location": j.location, "city": j.city, "salary": j.salary, "contact": j.contact, "job_description": j.job_description, "created_at": str(j.created_at)} for j in jobs] if jobs else []
 
 @app.post("/jobs")
 def create_job(data: JobCreate, db: Session = Depends(get_db)):
