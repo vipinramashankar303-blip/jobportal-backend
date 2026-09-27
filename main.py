@@ -5,7 +5,12 @@ from pydantic import BaseModel
 from database import get_connection
 import os
 from datetime import datetime
+from database import init_database
 
+@app.on_event("startup")
+def startup_event():
+    print("Creating tables...")
+    init_database()
 app = FastAPI(title="SimpleJobs Backend")
 
 app.add_middleware(
