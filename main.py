@@ -1,13 +1,59 @@
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from database import get_connection, init_database
-import os
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 from datetime import datetime
-from typing import List, Optional
+import os
+from dotenv import load_dotenv
 
-app = FastAPI(title="SimpleJobs Backend - Rozgar Setu")
+load_dotenv()
 
+# Database
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./jobs.db")
+# Neon needs psycopg2, sqlite fallback
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Models
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    phone = Column(String, unique=True, nullable=False)
+    password = Column(String, nullable=False)
+    role = Column(String, default="Worker")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Job(Base):
+    __tablename__ = "jobs"
+    job_id = Column(Integer, primary_key=True, index=True)
+    job_title = Column(String, nullable=False)
+    company = Column(String, nullable=False)
+    location = Column(String)
+    city = Column(String, default="Mumbai")
+    salary = Column(String)
+    contact = Column(String)
+    job_description = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Application(Base):
+    __tablename__ = "applications"
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.job_id"))
+    worker_name = Column(String)
+    worker_phone = Column(String)
+    worker_city = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
+
+# App
+app = FastAPI(title="SimpleJobs API - Rozgar Setu")
+
+# CORS - VERY IMPORTANT
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,194 +62,120 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-def startup_event():
+def get_db():
+    db = SessionLocal()
     try:
-        print("🚀 Creating tables...")
-        init_database()
-        print("✅ Tables ready!")
-    except Exception as e:
-        print(f"⚠️ DB init warning: {e}")
-        pass
+        yield db
+    finally:
+        db.close()
 
-# ===== MODELS =====
+# Schemas
+class RegisterRequest(BaseModel):
+    name: str
+    phone: str
+    password: str
+    role: str = "Worker"
+
+class LoginRequest(BaseModel):
+    phone: str
+    password: str
+
 class JobCreate(BaseModel):
-    job_title: str
-    company: str = "General Employer"
-    location: str
-    city: str = "Mumbai"
-    area: Optional[str] = None
-    salary: str = "15000"
-    contact: str
-    job_description: Optional[str] = None
-
-class JobResponse(BaseModel):
-    job_id: int
     job_title: str
     company: str
     location: str
-    city: str
+    city: str = "Mumbai"
     salary: str
-    contact: str
-    job_description: Optional[str] = None
-    created_at: Optional[str] = None
+    contact: str = ""
+    job_description: str = ""
 
-class ApplicationCreate(BaseModel):
+class ApplyRequest(BaseModel):
     job_id: int
     worker_name: str
     worker_phone: str
     worker_city: str = "Mumbai"
 
-# ===== ROUTES =====
+# Routes
 @app.get("/")
-def home():
-    return {"message": "Backend running - SimpleJobs Ready", "status": "live", "jobs_endpoint": "/jobs"}
+def root():
+    return {"message": "SimpleJobs Backend Live!", "jobs_endpoint": "/jobs", "register_endpoint": "/register"}
 
-@app.get("/jobs", response_model=List[JobResponse])
-def get_jobs():
-    conn = None
-    cur = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT job_id, job_title, company, location, city, salary, contact, job_description, created_at 
-            FROM simple_jobs 
-            ORDER BY created_at DESC 
-            LIMIT 100
-        """)
-        rows = cur.fetchall()
-        jobs = []
-        for r in rows:
-            jobs.append({
-                "job_id": r[0],
-                "job_title": r[1],
-                "company": r[2] or "General",
-                "location": r[3] or "",
-                "city": r[4] or "Mumbai",
-                "salary": r[5] or "15000",
-                "contact": r[6] or "",
-                "job_description": r[7] or "",
-                "created_at": str(r[8]) if r[8] else None
-            })
-        return jobs
-    except Exception as e:
-        print(f"Error in get_jobs: {e}")
-        # Try fallback to jobs table if simple_jobs doesn't exist
-        try:
-            if cur:
-                cur.execute("SELECT job_id, job_title, business_name, location, city, salary, contact, job_description, created_at FROM jobs ORDER BY created_at DESC LIMIT 100")
-                rows = cur.fetchall()
-                jobs = []
-                for r in rows:
-                    jobs.append({
-                        "job_id": r[0],
-                        "job_title": r[1],
-                        "company": r[2] or "General",
-                        "location": r[3] or "",
-                        "city": r[4] or "Mumbai",
-                        "salary": r[5] or "15000",
-                        "contact": r[6] or "",
-                        "job_description": r[7] or "",
-                        "created_at": str(r[8]) if r[8] else None
-                    })
-                return jobs
-        except:
-            pass
-        return []
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+@app.post("/register")
+def register(data: RegisterRequest, db: Session = Depends(get_db)):
+    # Check if already exists
+    existing = db.query(User).filter(User.phone == data.phone).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Phone already registered, please login")
+    
+    user = User(
+        name=data.name,
+        phone=data.phone,
+        password=data.password,  # In production use hashing
+        role=data.role
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"message": "Account created!", "user_id": user.id, "name": user.name, "role": user.role}
 
-@app.post("/jobs", response_model=JobResponse)
-def create_job(job: JobCreate):
-    conn = None
-    cur = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO simple_jobs (job_title, company, location, city, salary, contact, job_description)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING job_id, created_at
-        """, (job.job_title, job.company, job.location, job.city, job.salary, job.contact, job.job_description))
-        result = cur.fetchone()
-        job_id = result[0]
-        created_at = result[1]
-        conn.commit()
-        return {
-            "job_id": job_id,
-            "job_title": job.job_title,
-            "company": job.company,
-            "location": job.location,
-            "city": job.city,
-            "salary": job.salary,
-            "contact": job.contact,
-            "job_description": job.job_description,
-            "created_at": str(created_at)
-        }
-    except Exception as e:
-        print(f"Error creating job: {e}")
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+@app.post("/login")
+def login(data: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.phone == data.phone, User.password == data.password).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid phone or password")
+    return {"message": "Login success", "user_id": user.id, "name": user.name, "role": user.role}
+
+@app.get("/jobs")
+def get_jobs(db: Session = Depends(get_db)):
+    jobs = db.query(Job).order_by(Job.job_id.desc()).all()
+    # Convert to dict for frontend compatibility
+    result = []
+    for j in jobs:
+        result.append({
+            "job_id": j.job_id,
+            "job_title": j.job_title,
+            "company": j.company,
+            "location": j.location,
+            "city": j.city,
+            "salary": j.salary,
+            "contact": j.contact,
+            "job_description": j.job_description,
+            "created_at": j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else ""
+        })
+    return result
+
+@app.post("/jobs")
+def create_job(data: JobCreate, db: Session = Depends(get_db)):
+    job = Job(
+        job_title=data.job_title,
+        company=data.company,
+        location=data.location,
+        city=data.city,
+        salary=data.salary,
+        contact=data.contact,
+        job_description=data.job_description
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return {"message": "Job created", "job_id": job.job_id}
 
 @app.post("/apply")
-def apply_job(application: ApplicationCreate):
-    conn = None
-    cur = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO applications (job_id, worker_name, worker_phone, worker_city)
-            VALUES (%s, %s, %s, %s)
-            RETURNING application_id, applied_at
-        """, (application.job_id, application.worker_name, application.worker_phone, application.worker_city))
-        result = cur.fetchone()
-        conn.commit()
-        return {"message": "Application submitted successfully!", "application_id": result[0], "applied_at": str(result[1])}
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+def apply_job(data: ApplyRequest, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.job_id == data.job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    app_record = Application(
+        job_id=data.job_id,
+        worker_name=data.worker_name,
+        worker_phone=data.worker_phone,
+        worker_city=data.worker_city
+    )
+    db.add(app_record)
+    db.commit()
+    return {"message": "Applied successfully!"}
 
 @app.get("/applications")
-def get_applications():
-    conn = None
-    cur = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT application_id, job_id, worker_name, worker_phone, worker_city, applied_at FROM applications ORDER BY applied_at DESC LIMIT 100")
-        rows = cur.fetchall()
-        apps = []
-        for r in rows:
-            apps.append({
-                "application_id": r[0],
-                "job_id": r[1],
-                "worker_name": r[2],
-                "worker_phone": r[3],
-                "worker_city": r[4],
-                "applied_at": str(r[5])
-            })
-        return apps
-    except Exception as e:
-        return []
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+def get_applications(db: Session = Depends(get_db)):
+    apps = db.query(Application).all()
+    return apps
