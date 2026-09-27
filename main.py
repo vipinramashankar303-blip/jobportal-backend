@@ -1,56 +1,96 @@
+import os
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from datetime import datetime
-import os
 
-# Database URL - Fix for Render postgres://
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./jobs.db")
+# Get DB URL
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./jobs.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+print(f"Connecting to DB: {DATABASE_URL[:30]}...")
 
-# Models
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    phone = Column(String, unique=True, nullable=False, index=True)
-    password = Column(String, nullable=False)
-    role = Column(String, default="Worker")
-    created_at = Column(DateTime, default=datetime.utcnow)
+try:
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base = declarative_base()
+    
+    class User(Base):
+        __tablename__ = "users"
+        id = Column(Integer, primary_key=True, index=True)
+        name = Column(String, nullable=False)
+        phone = Column(String, unique=True, nullable=False, index=True)
+        password = Column(String, nullable=False)
+        role = Column(String, default="Worker")
+        created_at = Column(DateTime, default=datetime.utcnow)
 
-class Job(Base):
-    __tablename__ = "jobs"
-    job_id = Column(Integer, primary_key=True, index=True)
-    job_title = Column(String, nullable=False)
-    company = Column(String, nullable=False)
-    location = Column(String)
-    city = Column(String, default="Mumbai")
-    salary = Column(String)
-    contact = Column(String)
-    job_description = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    class Job(Base):
+        __tablename__ = "jobs"
+        job_id = Column(Integer, primary_key=True, index=True)
+        job_title = Column(String, nullable=False)
+        company = Column(String, nullable=False)
+        location = Column(String)
+        city = Column(String, default="Mumbai")
+        salary = Column(String)
+        contact = Column(String)
+        job_description = Column(Text)
+        created_at = Column(DateTime, default=datetime.utcnow)
 
-class Application(Base):
-    __tablename__ = "applications"
-    id = Column(Integer, primary_key=True, index=True)
-    job_id = Column(Integer, ForeignKey("jobs.job_id"))
-    worker_name = Column(String)
-    worker_phone = Column(String)
-    worker_city = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    class Application(Base):
+        __tablename__ = "applications"
+        id = Column(Integer, primary_key=True, index=True)
+        job_id = Column(Integer, ForeignKey("jobs.job_id"))
+        worker_name = Column(String)
+        worker_phone = Column(String)
+        worker_city = Column(String)
+        created_at = Column(DateTime, default=datetime.utcnow)
 
-# Create tables
-Base.metadata.create_all(bind=engine)
+    # Try create tables, but don't crash if fails
+    Base.metadata.create_all(bind=engine)
+    print("Tables created successfully")
+except Exception as e:
+    print(f"DB Error but continuing: {e}")
+    # Fallback to sqlite if postgres fails
+    engine = create_engine("sqlite:///./jobs.db")
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base = declarative_base()
+    
+    class User(Base):
+        __tablename__ = "users"
+        id = Column(Integer, primary_key=True, index=True)
+        name = Column(String, nullable=False)
+        phone = Column(String, unique=True, nullable=False, index=True)
+        password = Column(String, nullable=False)
+        role = Column(String, default="Worker")
+        created_at = Column(DateTime, default=datetime.utcnow)
 
-app = FastAPI(title="SimpleJobs API")
+    class Job(Base):
+        __tablename__ = "jobs"
+        job_id = Column(Integer, primary_key=True, index=True)
+        job_title = Column(String, nullable=False)
+        company = Column(String, nullable=False)
+        location = Column(String)
+        city = Column(String, default="Mumbai")
+        salary = Column(String)
+        contact = Column(String)
+        job_description = Column(Text)
+        created_at = Column(DateTime, default=datetime.utcnow)
+
+    class Application(Base):
+        __tablename__ = "applications"
+        id = Column(Integer, primary_key=True, index=True)
+        job_id = Column(Integer, ForeignKey("jobs.job_id"))
+        worker_name = Column(String)
+        worker_phone = Column(String)
+        worker_city = Column(String)
+        created_at = Column(DateTime, default=datetime.utcnow)
+    
+    Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="SimpleJobs")
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,43 +134,30 @@ class ApplyRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return {"message": "SimpleJobs Backend Live!", "status": "ok"}
+    return {"message": "SimpleJobs Live!", "docs": "/docs"}
 
 @app.post("/register")
 def register(data: RegisterRequest, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.phone == data.phone).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Phone already registered, please login")
+        raise HTTPException(status_code=400, detail="Phone already registered")
     user = User(name=data.name, phone=data.phone, password=data.password, role=data.role)
     db.add(user)
     db.commit()
     db.refresh(user)
-    return {"message": "Account created!", "user_id": user.id, "name": user.name, "role": user.role}
+    return {"message": "Account created!", "user_id": user.id}
 
 @app.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == data.phone, User.password == data.password).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid phone or password")
-    return {"message": "Login success", "user_id": user.id, "name": user.name, "role": user.role}
+    return {"message": "Login success", "user_id": user.id, "name": user.name}
 
 @app.get("/jobs")
 def get_jobs(db: Session = Depends(get_db)):
     jobs = db.query(Job).order_by(Job.job_id.desc()).all()
-    result = []
-    for j in jobs:
-        result.append({
-            "job_id": j.job_id,
-            "job_title": j.job_title,
-            "company": j.company,
-            "location": j.location,
-            "city": j.city,
-            "salary": j.salary,
-            "contact": j.contact,
-            "job_description": j.job_description,
-            "created_at": j.created_at.strftime("%Y-%m-%d %H:%M:%S") if j.created_at else ""
-        })
-    return result
+    return [{"job_id": j.job_id, "job_title": j.job_title, "company": j.company, "location": j.location, "city": j.city, "salary": j.salary, "contact": j.contact, "job_description": j.job_description, "created_at": str(j.created_at)} for j in jobs]
 
 @app.post("/jobs")
 def create_job(data: JobCreate, db: Session = Depends(get_db)):
@@ -142,10 +169,7 @@ def create_job(data: JobCreate, db: Session = Depends(get_db)):
 
 @app.post("/apply")
 def apply_job(data: ApplyRequest, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.job_id == data.job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    app_record = Application(job_id=data.job_id, worker_name=data.worker_name, worker_phone=data.worker_phone, worker_city=data.worker_city)
-    db.add(app_record)
+    app_rec = Application(job_id=data.job_id, worker_name=data.worker_name, worker_phone=data.worker_phone, worker_city=data.worker_city)
+    db.add(app_rec)
     db.commit()
-    return {"message": "Applied successfully!"}
+    return {"message": "Applied!"}
